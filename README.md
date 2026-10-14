@@ -21,6 +21,8 @@
 
 - EOS 會透過 `WMS_API_URL` 讀取倉儲系統的 `/api/inventory`，預設為 `http://127.0.0.1:3001`。
 - EOS 的「統家便利商店」會讀取倉儲系統 `/api/products` 的商品清單，商品代碼直接使用 `product_code`；中央倉各批可供數量顯示在商品卡片。
+- EOS 顯示單位與 WMS 儲存單位不同時，可在 `product-unit-map.json` 設定商品顯示單位及每單位公斤數。補貨建議與門市欄位使用顯示單位，總部核准後再換算成 WMS 的公斤數建立出貨單。
+- EOS 預設開啟「總部無限庫存演示模式」：核准後建立標示為模擬的出貨與收貨紀錄，不扣減 WMS 實際庫存。要關閉時，在啟動 EOS 的 PowerShell 執行 `$env:EOS_UNLIMITED_CENTRAL_STOCK="false"` 後再執行 `npm start`。
 - 兩個系統都在同一台電腦執行時，請讓倉儲系統使用 3001 埠、EOS 使用 3000 埠。可在啟動倉儲系統前於 PowerShell 設定 `$env:PORT=3001`；另一個 PowerShell 視窗再啟動 EOS。
 - 若倉儲系統使用 3002，啟動 EOS 前設定 `$env:WMS_API_URL="http://127.0.0.1:3002"`。
 - 竹南門市的盤點庫存由 WMS 現有可用庫存預填；近 7 日已完成出貨量也由 WMS 自動預填到可編輯欄位。兩項預設值在 WMS 與 EOS 相同，使用者都可核對後調整。交期預設 1 天，安全庫存參考商品最低庫存設定，請依實際營運再調整。

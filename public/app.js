@@ -54,9 +54,11 @@ function productLine(product) {
   const stockHelp = isChunanStore ? "由 WMS 現有庫存預填，可核對後調整" : `單位：${escapeHtml(product.unit)}`;
   const salesField = `<label>${salesLabel}<input type="number" min="0" step="${salesStep}" required data-field="recentSalesTotal" value="${product.recentSalesTotal}" /><small>${salesHelp}</small></label>`;
   const warehouseFact = !storeData?.warehouseConnection?.connected
-    ? "中央倉資料暫不可用"
+    ? (product.unlimitedCentralStockDemo ? "中央倉無限供應（演示模式）" : "中央倉資料暫不可用")
+    : product.unlimitedCentralStockDemo
+      ? "中央倉無限供應（演示模式）"
     : product.warehouseMatched
-      ? `中央倉可供 ${product.warehouseAvailableQty} ${product.warehouseUnit}（${product.warehouseBatchCount} 批）`
+      ? `中央倉可供 ${product.warehouseAvailableQty} ${product.warehouseUnit}（${product.warehouseBatchCount} 批）${Number(product.kgPerUnit || 1) !== 1 ? ` · 1 ${product.unit} = ${product.kgPerUnit} ${product.inventoryUnit}` : ""}`
       : `中央倉尚未對應商品（代碼 ${product.warehouseProductCode || product.sku}）`;
   const line = document.createElement("article");
   line.className = "product-line";
@@ -158,9 +160,9 @@ function renderStoreOrders(orders) {
     if (order.status === "待店長確認") return `<article class="draft-card"><div class="draft-content"><strong>${escapeHtml(order.id)} · ${escapeHtml(order.storeName)}</strong>${order.supervisorNote ? `<div class="reason-box">總部退回原因：${escapeHtml(order.supervisorNote)}</div>` : ""}<div class="draft-lines">${order.items.map(item => `<div class="draft-line"><span><strong>${escapeHtml(item.product)}</strong><small>建議 ${item.suggestedQty} ${escapeHtml(item.unit)}</small></span><label>確認申請量<input type="number" min="0" step="${item.unit === "kg" ? "0.01" : "1"}" required data-draft-qty="${escapeHtml(item.sku)}" value="${item.qty}" /></label><label>修改原因<input type="text" data-draft-reason="${escapeHtml(item.sku)}" value="${escapeHtml(item.reason)}" placeholder="數量偏離建議時必填" /></label></div>`).join("")}</div><small>請在 ${new Date(order.expiresAt).toLocaleTimeString("zh-TW")} 前核對並確認。未確認時，手動修改數量不會送出。</small></div><button class="primary-small" data-confirm-order="${escapeHtml(order.id)}">確認此單</button></article>`;
     const records = order.outboundOrders || [];
     const allShipped = records.length > 0 && records.every(record => record.status === "COMPLETED");
-    const fulfillment = records.length ? records.map(record => `${escapeHtml(record.outbound_no)} · ${escapeHtml(record.product_name || record.product || "商品")} ${record.quantity} ${escapeHtml(record.unit || "")} · ${record.status === "COMPLETED" ? "已出貨" : record.status === "WAITING_PICK" ? "待揀貨" : escapeHtml(record.status)}`).join("<br>") : "尚無倉庫出貨紀錄";
+    const fulfillment = records.length ? records.map(record => `${escapeHtml(record.outbound_no)} · ${escapeHtml(record.product_name || record.product || "商品")} ${record.quantity} ${escapeHtml(record.unit || "")} · ${record.simulated ? "模擬出貨完成" : record.status === "COMPLETED" ? "已出貨" : record.status === "WAITING_PICK" ? "待揀貨" : escapeHtml(record.status)}`).join("<br>") : "尚無倉庫出貨紀錄";
     const receiveButton = order.status === "已核准送倉" && allShipped ? `<button class="primary-small" data-receive-order="${escapeHtml(order.id)}">確認門市收貨</button>` : "";
-    const status = order.status === "已到貨" ? "門市已收貨" : allShipped ? "倉庫已出貨，待門市收貨" : "倉庫處理中";
+    const status = order.status === "已到貨" ? (order.simulatedFulfillment ? "演示收貨完成" : "門市已收貨") : allShipped ? (order.simulatedFulfillment ? "演示出貨完成，待確認收貨" : "倉庫已出貨，待門市收貨") : "倉庫處理中";
     return `<article class="draft-card"><div class="draft-content"><strong>${escapeHtml(order.id)} · ${escapeHtml(order.storeName)}　${status}</strong><div class="contact-row">${fulfillment}</div></div>${receiveButton}</article>`;
   }).join("");
 }
@@ -238,7 +240,7 @@ function renderWarehouseOutboundRecords() {
   }).filter(record => (!storeFilter || record.storeId === storeFilter) && (!statusFilter || record.status === statusFilter))
     .filter(record => !search || [record.outbound_no, record.orderId, record.product_name, record.batch_no, record.storeName, record.remark].some(value => String(value || "").toLocaleLowerCase("zh-TW").includes(search)));
   container.innerHTML = records.length ? records.map(record => {
-    const status = record.status === "COMPLETED" ? "已完成出貨" : record.status === "WAITING_PICK" ? "待揀貨" : "已取消";
+    const status = record.simulated ? "模擬出貨完成" : record.status === "COMPLETED" ? "已完成出貨" : record.status === "WAITING_PICK" ? "待揀貨" : "已取消";
     const created = record.created_at ? new Date(String(record.created_at).replace(" ", "T")).toLocaleString("zh-TW") : "—";
     return `<article class="order-card"><div class="order-card-head"><div><h4>${escapeHtml(record.product_name || "商品")} <span class="order-sub">· ${escapeHtml(record.outbound_no || "")}</span></h4><div class="order-sub">${created} · ${escapeHtml(record.storeName)}${record.orderId ? ` · 訂單 ${escapeHtml(record.orderId)}` : ""} · 批次 ${escapeHtml(record.batch_no || "—")}</div></div><span class="status-badge ${record.status === "COMPLETED" ? "status-approved" : record.status === "WAITING_PICK" ? "status-pending" : "status-neutral"}">${status}</span></div><div class="hq-lines"><div class="hq-line"><strong>出貨數量</strong><div>${escapeHtml(record.quantity)} ${escapeHtml(record.unit || "")} · ${escapeHtml(record.pick_locations || "未配置格位")}</div>${record.remark ? `<small>來源／備註：${escapeHtml(record.remark)}</small>` : ""}</div></div></article>`;
   }).join("") : `<div class="empty-state"><span>▤</span>${warehouseOutboundData.length ? "沒有符合篩選條件的出貨單。" : "目前尚無倉庫出貨單。"}</div>`;
@@ -331,7 +333,7 @@ $("shipmentStoreFilter").addEventListener("change", renderWarehouseOutboundRecor
 $("shipmentStatusFilter").addEventListener("change", renderWarehouseOutboundRecords);
 $("ordersList").addEventListener("click", async event => {
   const button = event.target.closest("button[data-action]");
-  if (!button) return;
+  if (!button || button.disabled) return;
   const { action, id } = button.dataset;
   try {
     if (action === "contact" || action === "no-response") {
@@ -339,24 +341,31 @@ $("ordersList").addEventListener("click", async event => {
       toast(action === "contact" ? "已建立聯絡紀錄（示範模式不會實際發送訊息）。" : "已記錄聯繫無回應。");
     } else {
       const order = ordersData.find(entry => entry.id === id);
-      const supervisor = prompt("請輸入主管姓名（稽核用）", "營運主管");
-      if (supervisor === null) return;
+      // 退回／暫緩只需要輸入原因；避免先詢問主管姓名，讓使用者誤以為原因被要求填兩次。
+      let supervisor = "營運主管";
       let note = "";
       if (["return", "hold"].includes(action)) {
         note = prompt(action === "return" ? "請填寫退回門市的原因" : "請填寫暫緩處理的原因", "");
         if (note === null) return;
-        if (!note.trim()) return toast("退回或暫緩處理需要填寫原因。", true);
+        note = note.trim();
+        if (!note) return toast("退回或暫緩處理需要填寫原因。", true);
       } else {
+        supervisor = prompt("請輸入主管姓名（稽核用）", "營運主管");
+        if (supervisor === null) return;
         const label = action === "approve_suggested" ? "採用各商品系統建議量" : "核准店長申請數量";
         note = prompt(`請輸入決策備註（可留空）。即將${label}，仍請逐項核對。`, "");
         if (note === null) return;
         if (!confirm(`確認由 ${supervisor} 決策：${label}？`)) return;
       }
+      button.disabled = true;
       await api(`/api/orders/${encodeURIComponent(id)}/decision`, { method:"POST", body:JSON.stringify({ decision:action, supervisor, note }) });
       toast(action === "return" ? "已退回門市重新確認。" : action === "hold" ? "訂單已暫緩。" : "主管已核准送倉。");
     }
     await loadOrders();
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message, true);
+  }
 });
 
 loadStoreOptions().catch(error => toast(error.message, true));

@@ -3,8 +3,10 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const MANAGER_CONFIRMATION_MINUTES = 10;
+const UNLIMITED_CENTRAL_STOCK = process.env.EOS_UNLIMITED_CENTRAL_STOCK !== "false";
 const WMS_API_URL = (process.env.WMS_API_URL || "http://127.0.0.1:3001").replace(/\/$/, "");
 const productMap = require("./product-map.json");
+const productUnitMap = require("./product-unit-map.json");
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -40,6 +42,8 @@ const CHUNAN_STORE_ID = "EOS-ZN-001";
 stores.push({ id: CHUNAN_STORE_ID, name: "統家便利商店", manager: "待設定", phone: "", mobile: "", lineWork: "", products: [] });
 let orders = [];
 let nextId = 1001;
+let nextSimulatedShipmentId = 1;
+const simulatedOutboundOrders = [];
 
 function calculateSuggestion(product, countedStock = product.stock, salesTotalOverride) {
   const sales = product.recentSales.slice(-7);
@@ -62,6 +66,17 @@ function calculateSuggestion(product, countedStock = product.stock, salesTotalOv
 
 function findStore(storeId) { return stores.find(store => store.id === storeId); }
 function findOrder(orderId) { return orders.find(order => order.id === orderId); }
+
+function getProductUnit(source) {
+  const configured = productUnitMap[String(source.product_code)]
+    || Object.entries(productUnitMap).find(([name]) => String(source.name || "").includes(name))?.[1];
+  const kgPerUnit = Number(configured?.kgPerUnit || 1);
+  return {
+    unit: configured?.unit || source.unit,
+    inventoryUnit: source.unit,
+    kgPerUnit: Number.isFinite(kgPerUnit) && kgPerUnit > 0 ? kgPerUnit : 1
+  };
+}
 
 async function readWarehouseInventory() {
   try {
@@ -88,24 +103,64 @@ async function readWarehouseProducts() {
 }
 
 async function createWarehouseFulfillment(order, approvedItems) {
+  if (UNLIMITED_CENTRAL_STOCK) {
+    const now = new Date().toISOString();
+    return approvedItems.filter(entry => Number(entry.approvedQty) > 0).map(item => {
+      const id = `SIM-${Date.now()}-${nextSimulatedShipmentId++}`;
+      const displayUnit = item.unit;
+      const kgPerUnit = Number(item.kgPerUnit || 1);
+      const inventoryUnit = item.inventoryUnit || item.unit;
+      const baseQuantity = Math.round((Number(item.approvedQty) * kgPerUnit + Number.EPSILON) * 100) / 100;
+      const record = {
+        outboundOrderId: id,
+        outbound_no: id,
+        product: item.product,
+        product_name: item.product,
+        product_code: item.sku,
+        quantity: Number(item.approvedQty),
+        unit: displayUnit,
+        status: "COMPLETED",
+        simulated: true,
+        pick_locations: "總部演示出貨（未扣 WMS 實際庫存）",
+        remark: `EOS訂單 ${order.id} · ${order.storeName} · ${item.product} · 模擬 ${item.approvedQty} ${displayUnit}（約 ${baseQuantity} ${inventoryUnit}）`,
+        created_at: now,
+        completed_at: now
+      };
+      simulatedOutboundOrders.unshift(record);
+      return record;
+    });
+  }
+
   const inventoryResponse = await fetch(`${WMS_API_URL}/api/inventory`, { signal: AbortSignal.timeout(5000) });
   if (!inventoryResponse.ok) throw new Error(`倉儲庫存 API 回應 ${inventoryResponse.status}`);
   const inventory = await inventoryResponse.json();
   const plan = [];
   for (const item of approvedItems.filter(entry => Number(entry.approvedQty) > 0)) {
+    const kgPerUnit = Number(item.kgPerUnit || 1);
+    const inventoryUnit = item.inventoryUnit || item.unit;
     const batches = inventory
-      .filter(batch => batch.product_code === item.sku && batch.unit === item.unit && Number(batch.qty) > 0)
+      .filter(batch => batch.product_code === item.sku && batch.unit === inventoryUnit && Number(batch.qty) > 0)
       .sort((a, b) => String(a.inboundDate || a.receivedAt).localeCompare(String(b.inboundDate || b.receivedAt)) || Number(a.id) - Number(b.id));
-    let remaining = Number(item.approvedQty);
+    let remaining = Math.round((Number(item.approvedQty) * kgPerUnit + Number.EPSILON) * 100) / 100;
     const allocations = [];
     for (const batch of batches) {
       const quantity = Math.min(Number(batch.qty), remaining);
       if (quantity > 0) allocations.push({ batchId: batch.id, quantity });
-      remaining = Math.round((remaining - quantity) * 100) / 100;
+      remaining = Math.round((remaining - quantity + Number.EPSILON) * 100) / 100;
       if (remaining <= 0.000001) break;
     }
-    if (remaining > 0.000001) throw new Error(`${item.product} 中央倉可供量不足，尚缺 ${remaining} ${item.unit}；訂單未核准。`);
-    plan.push(...allocations.map(allocation => ({ ...allocation, product: item.product, sku: item.sku, unit: item.unit })));
+    if (remaining > 0.000001) {
+      const missing = Math.round((remaining / kgPerUnit + Number.EPSILON) * 100) / 100;
+      throw new Error(`${item.product} 中央倉可供量不足，尚缺 ${missing} ${item.unit}（約 ${remaining} ${inventoryUnit}）；訂單未核准。`);
+    }
+    plan.push(...allocations.map(allocation => ({
+      ...allocation,
+      product: item.product,
+      sku: item.sku,
+      unit: inventoryUnit,
+      displayUnit: item.unit,
+      displayQuantity: Math.round((allocation.quantity / kgPerUnit + Number.EPSILON) * 100) / 100
+    })));
   }
 
   const created = [];
@@ -114,7 +169,7 @@ async function createWarehouseFulfillment(order, approvedItems) {
       const response = await fetch(`${WMS_API_URL}/api/outbound-orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId: allocation.batchId, quantity: allocation.quantity, remark: `EOS訂單 ${order.id} · ${order.storeName} · ${allocation.product}` }),
+        body: JSON.stringify({ batchId: allocation.batchId, quantity: allocation.quantity, remark: `EOS訂單 ${order.id} · ${order.storeName} · ${allocation.product} · ${allocation.displayQuantity} ${allocation.displayUnit}（${allocation.quantity} ${allocation.unit}）` }),
         signal: AbortSignal.timeout(5000)
       });
       const data = await response.json().catch(() => ({}));
@@ -131,10 +186,11 @@ async function createWarehouseFulfillment(order, approvedItems) {
 async function readWarehouseOutboundOrders() {
   try {
     const response = await fetch(`${WMS_API_URL}/api/outbound-orders?status=ALL`, { signal: AbortSignal.timeout(4000) });
-    if (!response.ok) return [];
-    return await response.json();
+    if (!response.ok) return [...simulatedOutboundOrders];
+    const records = await response.json();
+    return [...simulatedOutboundOrders, ...(Array.isArray(records) ? records : [])];
   } catch {
-    return [];
+    return [...simulatedOutboundOrders];
   }
 }
 
@@ -152,13 +208,14 @@ function mapWarehouseStock(product, inventory, catalogCodes = null) {
     const existsInCatalog = catalogCodes?.has(mappedCode) || false;
     return { warehouseProductCode: mappedCode, warehouseMatched: existsInCatalog, warehouseAvailableQty: existsInCatalog ? 0 : null, warehouseUnit: existsInCatalog ? product.unit : null, warehouseBatchCount: 0 };
   }
-  const unit = batches[0].unit;
-  if (batches.some(batch => batch.unit !== unit)) return { warehouseProductCode: mappedCode, warehouseMatched: false, warehouseAvailableQty: null, warehouseUnit: null, warehouseBatchCount: batches.length, warehouseMappingError: "倉儲商品單位不一致" };
+  const inventoryUnit = product.inventoryUnit || product.unit;
+  if (batches.some(batch => batch.unit !== inventoryUnit)) return { warehouseProductCode: mappedCode, warehouseMatched: false, warehouseAvailableQty: null, warehouseUnit: null, warehouseBatchCount: batches.length, warehouseMappingError: "倉儲商品單位不一致" };
+  const kgPerUnit = Number(product.kgPerUnit || 1);
   return {
     warehouseProductCode: mappedCode,
     warehouseMatched: true,
-    warehouseAvailableQty: Math.round(batches.reduce((sum, batch) => sum + Number(batch.qty || 0), 0) * 100) / 100,
-    warehouseUnit: unit,
+    warehouseAvailableQty: Math.round((batches.reduce((sum, batch) => sum + Number(batch.qty || 0), 0) / kgPerUnit + Number.EPSILON) * 100) / 100,
+    warehouseUnit: product.unit,
     warehouseBatchCount: batches.length
   };
 }
@@ -214,13 +271,16 @@ app.get("/api/store", async (req, res) => {
   if (catalog?.connected) {
     store.products = catalog.products.map(source => {
       const existing = store.products.find(product => product.sku === source.product_code);
+      const unitSettings = getProductUnit(source);
+      const toDisplayUnit = value => Math.round((Number(value || 0) / unitSettings.kgPerUnit + Number.EPSILON) * 100) / 100;
       return {
         ...(existing || { stock: 0, leadTimeDays: 1, reviewDays: 1, bufferStock: 0, recentSales: Array(7).fill(0) }),
-        sku: source.product_code, name: source.name, category: source.category || "未分類", unit: source.unit,
-        sales7DayTotal: Number(source.recent_sales_7d || 0),
+        sku: source.product_code, name: source.name, category: source.category || "未分類",
+        ...unitSettings,
+        sales7DayTotal: toDisplayUnit(source.recent_sales_7d),
         recentSalesOrderCount: Number(source.recent_sales_order_count || 0),
-        recentSales: Array(7).fill(Number(source.recent_sales_7d || 0) / 7),
-        safetyStock: Number(source.min_stock || 0), sourceMinStock: Number(source.min_stock || 0)
+        recentSales: Array(7).fill(toDisplayUnit(source.recent_sales_7d) / 7),
+        safetyStock: toDisplayUnit(source.min_stock), sourceMinStock: Number(source.min_stock || 0)
       };
     });
   }
@@ -229,13 +289,14 @@ app.get("/api/store", async (req, res) => {
   const products = store.products.map(product => {
     const warehouseStock = warehouse.connected ? mapWarehouseStock(product, warehouse.inventory, catalogCodes) : { warehouseMatched: false, warehouseAvailableQty: null, warehouseUnit: null };
     const detectedStock = store.id === CHUNAN_STORE_ID && warehouseStock.warehouseAvailableQty != null
-      ? Number(warehouseStock.warehouseAvailableQty)
+      ? Math.round((Number(warehouseStock.warehouseAvailableQty) + (UNLIMITED_CENTRAL_STOCK ? Number(product.demoReceivedQty || 0) : 0) + Number.EPSILON) * 100) / 100
       : Number(product.stock || 0);
     return {
       ...product,
       ...calculateSuggestion(product, detectedStock),
       currentStock: detectedStock,
       ...warehouseStock,
+      unlimitedCentralStockDemo: UNLIMITED_CENTRAL_STOCK,
       ...(catalog ? { salesDataConfigured: product.recentSales.some(value => Number(value) > 0), forecastSetupNote: "交期預設 1 天；門市安全庫存暫參考商品最低庫存設定" } : {})
     };
   });
@@ -255,9 +316,13 @@ app.get("/api/warehouse/outbound-orders", async (_req, res) => {
   try {
     const response = await fetch(`${WMS_API_URL}/api/outbound-orders?status=ALL`, { signal: AbortSignal.timeout(5000) });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) return res.status(502).json({ error: data.message || "無法取得倉庫出貨紀錄。" });
-    res.json(data);
+    if (!response.ok) {
+      if (UNLIMITED_CENTRAL_STOCK) return res.json(simulatedOutboundOrders);
+      return res.status(502).json({ error: data.message || "無法取得倉庫出貨紀錄。" });
+    }
+    res.json([...simulatedOutboundOrders, ...(Array.isArray(data) ? data : [])]);
   } catch (error) {
+    if (UNLIMITED_CENTRAL_STOCK) return res.json(simulatedOutboundOrders);
     res.status(502).json({ error: `倉庫出貨資料暫時無法連線（${WMS_API_URL}）。` });
   }
 });
@@ -292,6 +357,7 @@ app.post("/api/orders", (req, res) => {
     if (anomaly && !reason) return res.status(400).json({ error: `${product.name}：${anomaly} 請填寫修改原因。`, anomalyRequired: true });
     preparedItems.push({
       sku: product.sku, product: product.name, category: product.category, unit: product.unit,
+      inventoryUnit: product.inventoryUnit || product.unit, kgPerUnit: Number(product.kgPerUnit || 1),
       currentStock: countedStock, safetyStock: product.safetyStock,
       avgDailyDemand: suggestion.avgDailyDemand, recentSales: Array(7).fill(0), recentSalesTotal,
       leadTimeDays: product.leadTimeDays, reviewDays: product.reviewDays, bufferStock: product.bufferStock,
@@ -373,11 +439,14 @@ app.post("/api/orders/:id/receive", async (req, res) => {
   if (!store) return res.status(409).json({ error: "找不到訂單所屬門市。" });
   order.items.forEach(item => {
     const product = store.products.find(entry => entry.sku === item.sku);
-    if (product) product.stock = Math.round((Number(product.stock || 0) + Number(item.approvedQty || 0)) * 100) / 100;
+    if (product) {
+      product.stock = Math.round((Number(product.stock || 0) + Number(item.approvedQty || 0)) * 100) / 100;
+      if (order.simulatedFulfillment) product.demoReceivedQty = Math.round((Number(product.demoReceivedQty || 0) + Number(item.approvedQty || 0)) * 100) / 100;
+    }
   });
   order.receivedAt = new Date().toISOString();
   order.status = "已到貨";
-  order.auditLog.push({ time: order.receivedAt, actor: store.manager, action: "門市確認收貨，更新門市庫存" });
+  order.auditLog.push({ time: order.receivedAt, actor: store.manager, action: order.simulatedFulfillment ? "演示門市確認收貨，更新 EOS 示範庫存（WMS 實際庫存未變更）" : "門市確認收貨，更新門市庫存" });
   res.json(order);
 });
 
@@ -404,8 +473,11 @@ app.post("/api/orders/:id/decision", async (req, res) => {
   if (decision === "approve_requested" || decision === "approve_suggested") {
     order.approvedSummary = summarizeByUnit(order.items, "approvedQty");
     order.outboundOrders = warehouseFulfillment;
+    order.simulatedFulfillment = UNLIMITED_CENTRAL_STOCK;
     order.status = "已核准送倉";
-    order.supervisorDecision = decision === "approve_suggested" ? "依系統建議量核准" : "核准店長申請數量";
+    order.supervisorDecision = UNLIMITED_CENTRAL_STOCK
+      ? "演示模式核准（模擬出貨，未扣 WMS 實際庫存）"
+      : decision === "approve_suggested" ? "依系統建議量核准" : "核准店長申請數量";
   } else if (decision === "return") {
     order.status = "待店長確認";
     order.supervisorDecision = "退回門市重新確認";
