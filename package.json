@@ -1,0 +1,8 @@
+{
+  "name": "eos-restock-system",
+  "version": "1.0.0",
+  "description": "EOS 安全庫存與補貨審核系統示範",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "dev": "node server.js" },
+  "dependencies": { "express": "^4.21.2" }
+}

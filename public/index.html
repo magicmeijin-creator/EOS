@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EOS 智慧補貨與稽核系統</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark">E</div><div><strong>EOS</strong><span>智慧補貨管理系統</span></div></div>
+    <div class="top-actions"><span class="live-dot"></span> 系統運作中 <span id="warehouseLinkStatus" class="warehouse-link-status" title="中央倉庫存 API 連線狀態">中央倉：連線檢查中</span><span class="user-pill">示範帳號：營運管理</span></div>
+  </header>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="side-label">工作台</div>
+      <button class="nav-item active" data-page="store"><span>▦</span> 門市補貨</button>
+      <button class="nav-item" data-page="hq"><span>▤</span> 總部訂單審核 <b id="pendingBadge">0</b></button>
+      <button class="nav-item" data-page="shipments"><span>⇢</span> 中央倉出貨管理</button>
+      <button class="nav-item" data-page="audit"><span>◷</span> 責任稽核紀錄</button>
+      <div class="side-bottom"><div class="secure-icon">✓</div><strong>流程留痕保護</strong><p>訂單、聯絡與主管決策均保留稽核紀錄。</p></div>
+    </aside>
+    <main class="main">
+      <section id="page-store" class="page">
+        <div class="page-heading"><div><div class="eyebrow">STORE OPERATIONS</div><h1>門市補貨工作台</h1><p>系統依安全庫存、銷售需求與交期計算建議量，減少人工輸入錯誤。</p></div><span class="date-chip" id="today"></span></div>
+        <div class="store-banner"><div class="store-symbol">店</div><div class="store-meta"><span class="muted-light">選擇門市</span><select id="storeSelect" class="store-select" aria-label="選擇門市"></select><strong id="storeName" class="store-name">—</strong><span id="storeContact">—</span></div><div class="banner-right"><span class="status-tag"><i></i> 示範門市</span><div class="muted-light">當班店長</div><strong id="managerName">—</strong></div></div>
+        <div class="stats-grid">
+          <article class="stat-card"><div class="stat-top"><span>門市商品品項</span><span class="stat-icon purple">▦</span></div><div class="stat-number" id="productCount">—</div><div class="stat-foot">依門市管理的商品項目</div></article>
+          <article class="stat-card"><div class="stat-top"><span>需優先補貨</span><span class="stat-icon blue">◇</span></div><div class="stat-number" id="restockCount">—</div><div class="stat-foot">盤點庫存低於再訂購點</div></article>
+          <article class="stat-card"><div class="stat-top"><span>有建議補貨</span><span class="stat-icon green">↗</span></div><div class="stat-number" id="suggestionCount">—</div><div class="stat-foot positive">建議量依近 7 日銷售計算</div></article>
+          <article class="stat-card"><div class="stat-top"><span>待店長確認</span><span class="stat-icon orange">⌁</span></div><div class="stat-number" id="storeDraftCount">0</div><div class="stat-foot">逾時改採建議量送總部審核</div></article>
+        </div>
+        <div class="content-grid">
+          <section class="panel order-panel">
+            <div class="panel-heading"><div><h3>每日盤點與補貨需求</h3><p>輸入現場盤點數量，系統依近 7 日銷售更新建議量</p></div><span class="step-label">門市作業</span></div>
+            <form id="orderForm">
+              <div id="productLines" class="product-lines"></div>
+              <div class="manager-confirm"><input type="checkbox" id="managerConfirmed" /><label for="managerConfirmed"><strong>我已確認現場實際庫存與補貨數量</strong><span>勾選代表店長已核對本次需求。</span></label></div>
+              <div class="auto-note"><span>◷</span><div><strong>未確認的處理方式</strong><p>未勾選時先暫存 10 分鐘等待店長確認；逾時後，系統會捨棄手動修改量，只將系統建議量送總部審核，不會自動送倉。</p></div></div>
+              <button class="primary-button full" type="submit" id="submitOrder">建立補貨訂單 <span>→</span></button>
+              <p class="form-foot">補貨量異常時仍可提出，但需填寫原因並由總部審核。</p>
+            </form>
+            <section class="store-drafts"><div class="panel-heading"><div><h3>門市訂單與收貨</h3><p>待確認訂單可在 10 分鐘內核對；倉庫出貨完成後，可在此確認收貨並更新門市庫存。</p></div></div><div id="storeOrderList" class="orders-list"></div></section>
+          </section>
+          <section class="panel formula-panel">
+            <div class="panel-heading"><div><h3>補貨邏輯說明</h3><p>生產管理：安全庫存與補貨量</p></div><span class="formula-icon">ƒx</span></div>
+            <div class="formula-card"><span class="formula-title">再訂購點（ROP）</span><div class="formula">日均需求 × 前置時間 + 安全庫存</div><p>庫存低於再訂購點時，系統提醒門市補貨。</p></div>
+            <div class="formula-card accent"><span class="formula-title">建議補貨量</span><div class="formula">目標庫存 − 目前庫存</div><p>目標庫存考量交期、檢視頻率、安全量與額外緩衝。</p></div>
+            <div class="parameter-list"><div><span>需求資料</span><strong>近 7 日逐日銷售</strong></div><div><span>盤點數量</span><strong>門市當日輸入</strong></div><div><span>安全庫存與交期</span><strong>商品示範參數</strong></div><div><span>補貨週期</span><strong>各商品設定</strong></div></div>
+            <div class="info-note"><span>ⓘ</span><p>「竹南冷凍公司」商品、中央倉庫存與近 7 日已出貨量由 WMS 提供；需核對當日盤點量。交期暫設 1 天，安全庫存參考商品最低庫存設定，正式使用前請依實際資料調整。</p></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="page-hq" class="page hidden">
+        <div class="page-heading"><div><div class="eyebrow">HEADQUARTERS CONTROL</div><h1>總部訂單審核</h1><p>查看全台門市訂單；可核准原申請量、改採建議量、退回確認或暫緩。</p></div><span class="date-chip">總部管理端</span></div>
+        <div class="stats-grid compact-stats"><article class="stat-card"><div class="stat-top"><span>全部訂單</span><span class="stat-icon purple">▤</span></div><div class="stat-number" id="totalOrders">0</div></article><article class="stat-card"><div class="stat-top"><span>待稽核異常</span><span class="stat-icon orange">!</span></div><div class="stat-number" id="anomalyOrders">0</div></article><article class="stat-card"><div class="stat-top"><span>待確認訂單</span><span class="stat-icon blue">◷</span></div><div class="stat-number" id="pendingOrders">0</div></article><article class="stat-card"><div class="stat-top"><span>已核准送倉</span><span class="stat-icon green">✓</span></div><div class="stat-number" id="approvedOrders">0</div></article></div>
+        <div class="panel table-panel"><div class="panel-heading"><div><h3>全台門市需求單</h3><p>選擇訂單查看異常原因、聯絡資訊與稽核歷程</p></div><button class="secondary-button" id="refreshOrders">↻ 更新列表</button></div><div id="ordersList" class="orders-list"></div></div>
+      </section>
+
+      <section id="page-shipments" class="page hidden">
+        <div class="page-heading"><div><div class="eyebrow">CENTRAL WAREHOUSE FULFILLMENT</div><h1>中央倉出貨管理</h1><p>集中追蹤各門市核准後建立的揀貨單，以及其他倉庫出貨紀錄。</p></div><span class="date-chip">中央倉作業</span></div>
+        <div class="panel table-panel">
+          <div class="panel-heading"><div><h3>倉庫出貨單</h3><p>可依門市、出貨狀態或訂單／商品關鍵字篩選。</p></div><button class="secondary-button" id="refreshOutbound">↻ 更新出貨紀錄</button></div>
+          <div class="shipment-filters">
+            <input id="shipmentSearch" type="search" placeholder="搜尋訂單編號、出貨單或商品" aria-label="搜尋訂單編號、出貨單或商品" />
+            <select id="shipmentStoreFilter" aria-label="依門市篩選"><option value="">所有門市／來源</option><option value="__direct__">直接倉庫出貨</option></select>
+            <select id="shipmentStatusFilter" aria-label="依出貨狀態篩選"><option value="">所有出貨狀態</option><option value="WAITING_PICK">待揀貨</option><option value="COMPLETED">已完成出貨</option><option value="CANCELLED">已取消</option></select>
+          </div>
+          <div id="warehouseOutboundList" class="orders-list"><div class="empty-state">載入倉庫出貨紀錄中…</div></div>
+        </div>
+      </section>
+
+      <section id="page-audit" class="page hidden">
+        <div class="page-heading"><div><div class="eyebrow">AUDIT & ACCOUNTABILITY</div><h1>責任稽核紀錄</h1><p>記錄店長確認狀態、異常原因、聯絡狀態及主管最終決策。</p></div><span class="date-chip">不可忽略的操作紀錄</span></div>
+        <div class="panel"><div class="panel-heading"><div><h3>操作時間軸</h3><p>每筆訂單的關鍵事件與責任角色</p></div></div><div id="auditList" class="audit-list"></div></div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
