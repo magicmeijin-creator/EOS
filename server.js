@@ -37,7 +37,7 @@ const stores = [
   }
 ];
 const CHUNAN_STORE_ID = "EOS-ZN-001";
-stores.push({ id: CHUNAN_STORE_ID, name: "竹南冷凍公司", manager: "待設定", phone: "", mobile: "", lineWork: "", products: [] });
+stores.push({ id: CHUNAN_STORE_ID, name: "統家便利商店", manager: "待設定", phone: "", mobile: "", lineWork: "", products: [] });
 let orders = [];
 let nextId = 1001;
 
